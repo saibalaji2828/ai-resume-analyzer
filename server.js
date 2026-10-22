@@ -1,91 +1,122 @@
-
 import "dotenv/config";
+
 import express from "express";
 import session from "express-session";
-import SQLiteStoreFactory from "connect-sqlite3";
-import Database from "better-sqlite3";
+import connectPgSimple from "connect-pg-simple";
+import pg from "pg";
 import bcrypt from "bcryptjs";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import path from "node:path";
-import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 
+const { Pool } = pg;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const app = express();
-const PORT = Number(process.env.PORT || 3000);
 const isProduction = process.env.NODE_ENV === "production";
-const dataDir = path.join(__dirname, "data");
 
-fs.mkdirSync(dataDir, { recursive: true });
-
-if (isProduction && (!process.env.SESSION_SECRET || process.env.SESSION_SECRET.length < 32)) {
-  throw new Error("Set SESSION_SECRET to a random secret of at least 32 characters.");
+if (
+  isProduction &&
+  (!process.env.DATABASE_URL ||
+    !process.env.SESSION_SECRET ||
+    process.env.SESSION_SECRET.length < 32)
+) {
+  throw new Error(
+    "Set DATABASE_URL and a SESSION_SECRET of at least 32 characters in Vercel Environment Variables."
+  );
 }
 
-const db = new Database(path.join(dataDir, "resumeiq.sqlite"));
-db.pragma("journal_mode = WAL");
-db.pragma("foreign_keys = ON");
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL
+    ? { rejectUnauthorized: false }
+    : undefined,
+  max: isProduction ? 5 : 10,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 10000
+});
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL COLLATE NOCASE UNIQUE,
-    password_hash TEXT NOT NULL,
-    created_at TEXT NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS analyses (
-    id TEXT PRIMARY KEY,
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    report_json TEXT NOT NULL,
-    created_at TEXT NOT NULL
-  );
-`);
-
-const SQLiteStore = SQLiteStoreFactory(session);
+const PgSessionStore = connectPgSimple(session);
 
 app.disable("x-powered-by");
+app.set("trust proxy", 1);
+
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: false }));
 
-app.use(session({
-  store: new SQLiteStore({
-    db: "sessions.sqlite",
-    dir: dataDir,
-    table: "sessions"
-  }),
-  name: "resumeiq.sid",
-  secret: process.env.SESSION_SECRET ||
-    "local-development-only-secret-change-before-deployment-123456789",
-  resave: false,
-  saveUninitialized: false,
-  cookie: {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: isProduction,
-    maxAge: 7 * 24 * 60 * 60 * 1000
+app.use(
+  session({
+    store: new PgSessionStore({
+      pool,
+      tableName: "user_sessions",
+      createTableIfMissing: true
+    }),
+    name: "resumeiq.sid",
+    secret:
+      process.env.SESSION_SECRET ||
+      "local-development-only-secret-change-before-deployment-123456789",
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: isProduction,
+      maxAge: 7 * 24 * 60 * 60 * 1000
+    }
+  })
+);
+
+app.use(
+  "/api/auth",
+  rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 30,
+    standardHeaders: true,
+    legacyHeaders: false
+  })
+);
+
+let schemaReadyPromise;
+
+async function ensureSchema() {
+  if (!schemaReadyPromise) {
+    schemaReadyPromise = (async () => {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS users (
+          id BIGSERIAL PRIMARY KEY,
+          name TEXT NOT NULL UNIQUE,
+          password_hash TEXT NOT NULL,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `);
+
+      await pool.query(`
+        CREATE UNIQUE INDEX IF NOT EXISTS users_name_lower_unique
+        ON users (LOWER(name))
+      `);
+
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS analyses (
+          id TEXT PRIMARY KEY,
+          user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          report_json JSONB NOT NULL,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `);
+
+      await pool.query(`
+        CREATE INDEX IF NOT EXISTS analyses_user_created_idx
+        ON analyses (user_id, created_at DESC)
+      `);
+    })().catch((error) => {
+      schemaReadyPromise = undefined;
+      throw error;
+    });
   }
-}));
 
-app.use("/api/auth", rateLimit({
-  windowMs: 15 * 60 * 1000,
-  limit: 30,
-  standardHeaders: true,
-  legacyHeaders: false
-}));
-
-function requireAuth(req, res, next) {
-  if (!req.session.user) {
-    return res.status(401).json({ error: "Please log in to continue." });
-  }
-  next();
-}
-
-function safeUser(user) {
-  return { id: user.id, name: user.name };
+  return schemaReadyPromise;
 }
 
 function asyncRoute(handler) {
@@ -93,122 +124,157 @@ function asyncRoute(handler) {
     Promise.resolve(handler(req, res, next)).catch(next);
 }
 
-/* HEALTH */
+function requireAuth(req, res, next) {
+  if (!req.session.user) {
+    return res.status(401).json({
+      error: "Please log in to continue."
+    });
+  }
 
-app.get("/api/health", (_req, res) => {
-  res.json({ ok: true, service: "ResumeIQ" });
-});
+  next();
+}
 
-/* CURRENT USER */
+function safeUser(user) {
+  return {
+    id: String(user.id),
+    name: user.name
+  };
+}
+
+app.get(
+  "/api/health",
+  asyncRoute(async (_req, res) => {
+    await ensureSchema();
+    await pool.query("SELECT 1");
+
+    res.json({
+      ok: true,
+      service: "ResumeIQ"
+    });
+  })
+);
 
 app.get("/api/auth/me", (req, res) => {
-  res.json({ user: req.session.user || null });
+  res.json({
+    user: req.session.user || null
+  });
 });
 
-/* SIGNUP: NAME AND PASSWORD */
+/* SIGNUP */
+app.post(
+  "/api/auth/signup",
+  asyncRoute(async (req, res, next) => {
+    await ensureSchema();
 
-app.post("/api/auth/signup", asyncRoute(async (req, res, next) => {
-  const name = String(req.body?.name || "").trim();
-  const password = String(req.body?.password || "");
+    const name = String(req.body?.name || "").trim();
+    const password = String(req.body?.password || "");
 
-  if (name.length < 2 || name.length > 60) {
-    return res.status(400).json({
-      error: "Name must be between 2 and 60 characters."
-    });
-  }
-
-  if (!/^[\p{L}\p{N} ._'-]+$/u.test(name)) {
-    return res.status(400).json({
-      error: "Name contains unsupported characters."
-    });
-  }
-
-  if (password.length < 8 || password.length > 128) {
-    return res.status(400).json({
-      error: "Password must be 8–128 characters long."
-    });
-  }
-
-  const existing = db.prepare(
-    "SELECT id FROM users WHERE name = ? COLLATE NOCASE"
-  ).get(name);
-
-  if (existing) {
-    return res.status(409).json({
-      error: "That name already has an account. Please log in."
-    });
-  }
-
-  const passwordHash = await bcrypt.hash(password, 12);
-
-  let result;
-  try {
-    result = db.prepare(
-      `INSERT INTO users (name, password_hash, created_at)
-       VALUES (?, ?, ?)`
-    ).run(name, passwordHash, new Date().toISOString());
-  } catch (error) {
-    if (error.code === "SQLITE_CONSTRAINT_UNIQUE") {
-      return res.status(409).json({
-        error: "That name already exists. Please choose another name."
+    if (name.length < 2 || name.length > 60) {
+      return res.status(400).json({
+        error: "Name must be between 2 and 60 characters."
       });
     }
-    throw error;
-  }
 
-  const user = safeUser({
-    id: Number(result.lastInsertRowid),
-    name
-  });
+    if (!/^[\p{L}\p{N} ._'-]+$/u.test(name)) {
+      return res.status(400).json({
+        error: "Name contains unsupported characters."
+      });
+    }
 
-  req.session.regenerate((err) => {
-    if (err) return next(err);
+    if (password.length < 8 || password.length > 128) {
+      return res.status(400).json({
+        error: "Password must be 8–128 characters long."
+      });
+    }
 
-    req.session.user = user;
-    req.session.save((saveErr) => {
-      if (saveErr) return next(saveErr);
-      res.status(201).json({ user });
+    const passwordHash = await bcrypt.hash(password, 12);
+    let result;
+
+    try {
+      result = await pool.query(
+        `INSERT INTO users (name, password_hash)
+         VALUES ($1, $2)
+         RETURNING id, name`,
+        [name, passwordHash]
+      );
+    } catch (error) {
+      if (error.code === "23505") {
+        return res.status(409).json({
+          error:
+            "That name already has an account. Please log in or choose another name."
+        });
+      }
+
+      throw error;
+    }
+
+    const user = safeUser(result.rows[0]);
+
+    req.session.regenerate((err) => {
+      if (err) return next(err);
+
+      req.session.user = user;
+
+      req.session.save((saveErr) => {
+        if (saveErr) return next(saveErr);
+
+        res.status(201).json({ user });
+      });
     });
-  });
-}));
+  })
+);
 
-/* LOGIN: NAME AND PASSWORD */
+/* LOGIN */
+app.post(
+  "/api/auth/login",
+  asyncRoute(async (req, res, next) => {
+    await ensureSchema();
 
-app.post("/api/auth/login", asyncRoute(async (req, res, next) => {
-  const name = String(req.body?.name || "").trim();
-  const password = String(req.body?.password || "");
+    const name = String(req.body?.name || "").trim();
+    const password = String(req.body?.password || "");
 
-  if (!name || !password) {
-    return res.status(400).json({
-      error: "Enter your name and password."
+    if (!name || !password) {
+      return res.status(400).json({
+        error: "Enter your name and password."
+      });
+    }
+
+    const result = await pool.query(
+      `SELECT id, name, password_hash
+       FROM users
+       WHERE LOWER(name) = LOWER($1)
+       LIMIT 1`,
+      [name]
+    );
+
+    const userRecord = result.rows[0];
+
+    if (
+      !userRecord ||
+      !(await bcrypt.compare(password, userRecord.password_hash))
+    ) {
+      return res.status(401).json({
+        error: "Incorrect name or password."
+      });
+    }
+
+    const user = safeUser(userRecord);
+
+    req.session.regenerate((err) => {
+      if (err) return next(err);
+
+      req.session.user = user;
+
+      req.session.save((saveErr) => {
+        if (saveErr) return next(saveErr);
+
+        res.json({ user });
+      });
     });
-  }
-
-  const user = db.prepare(
-    `SELECT id, name, password_hash
-     FROM users
-     WHERE name = ? COLLATE NOCASE`
-  ).get(name);
-
-  if (!user || !(await bcrypt.compare(password, user.password_hash))) {
-    return res.status(401).json({
-      error: "Incorrect name or password."
-    });
-  }
-
-  req.session.regenerate((err) => {
-    if (err) return next(err);
-
-    req.session.user = safeUser(user);
-    req.session.save((saveErr) => {
-      if (saveErr) return next(saveErr);
-      res.json({ user: req.session.user });
-    });
-  });
-}));
+  })
+);
 
 /* LOGOUT */
-
 app.post("/api/auth/logout", (req, res) => {
   req.session.destroy((err) => {
     if (err) {
@@ -228,52 +294,52 @@ app.post("/api/auth/logout", (req, res) => {
 });
 
 /* SKILL ALIASES */
-
 const SKILL_ALIASES = {
-  "JavaScript": ["javascript", "java script"],
-  "TypeScript": ["typescript"],
-  "Python": ["python"],
-  "SQL": ["sql", "structured query language"],
-  "Excel": ["excel", "microsoft excel", "spreadsheets"],
+  JavaScript: ["javascript", "java script"],
+  TypeScript: ["typescript"],
+  Python: ["python"],
+  SQL: ["sql", "structured query language"],
+  Excel: ["excel", "microsoft excel", "spreadsheets"],
   "Power BI": ["power bi", "powerbi"],
-  "Tableau": ["tableau"],
+  Tableau: ["tableau"],
   "Data Analysis": ["data analysis", "data analytics"],
-  "Statistics": ["statistics", "statistical analysis"],
+  Statistics: ["statistics", "statistical analysis"],
   "Machine Learning": ["machine learning"],
   "Deep Learning": ["deep learning"],
-  "HTML": ["html", "html5"],
-  "CSS": ["css", "css3"],
-  "React": ["react.js", "reactjs", "react"],
+  HTML: ["html", "html5"],
+  CSS: ["css", "css3"],
+  React: ["react.js", "reactjs", "react"],
   "Node.js": ["node.js", "nodejs"],
   "Express.js": ["express.js", "expressjs"],
-  "Java": ["java"],
+  Java: ["java"],
   "C++": ["c++", "cpp"],
   "C Programming": ["c programming", "c language"],
-  "Git": ["git"],
-  "GitHub": ["github"],
-  "MySQL": ["mysql"],
-  "PostgreSQL": ["postgresql", "postgres"],
-  "MongoDB": ["mongodb"],
-  "Cybersecurity": ["cybersecurity", "cyber security"],
-  "Networking": ["networking", "tcp/ip"],
-  "Linux": ["linux"],
-  "Wireshark": ["wireshark"],
-  "Nmap": ["nmap"],
-  "Metasploit": ["metasploit"],
+  Git: ["git"],
+  GitHub: ["github"],
+  MySQL: ["mysql"],
+  PostgreSQL: ["postgresql", "postgres"],
+  MongoDB: ["mongodb"],
+  Cybersecurity: ["cybersecurity", "cyber security"],
+  Networking: ["networking", "tcp/ip"],
+  Linux: ["linux"],
+  Wireshark: ["wireshark"],
+  Nmap: ["nmap"],
+  Metasploit: ["metasploit"],
   "Burp Suite": ["burp suite"],
-  "AWS": ["amazon web services", "aws"],
-  "Azure": ["microsoft azure", "azure"],
-  "Docker": ["docker"],
-  "Kubernetes": ["kubernetes"],
-  "Communication": ["communication"],
+  AWS: ["amazon web services", "aws"],
+  Azure: ["microsoft azure", "azure"],
+  Docker: ["docker"],
+  Kubernetes: ["kubernetes"],
+  Communication: ["communication"],
   "Problem Solving": ["problem solving", "problem-solving"],
   "Project Management": ["project management"],
-  "PowerPoint": ["powerpoint", "power point"],
+  PowerPoint: ["powerpoint", "power point"],
   "Microsoft Word": ["microsoft word", "ms word"]
 };
 
 function hasPhrase(text, phrase) {
-  const escaped = phrase.trim()
+  const escaped = phrase
+    .trim()
     .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
     .replace(/\s+/g, "\\s+");
 
@@ -284,8 +350,12 @@ function hasPhrase(text, phrase) {
 }
 
 /* LOCAL RESUME ANALYZER */
-
-function analyzeLocally(resumeText, jobDescription, jobTitle, fileName) {
+function analyzeLocally(
+  resumeText,
+  jobDescription,
+  jobTitle,
+  fileName
+) {
   const resume = resumeText.toLowerCase();
   const job = jobDescription.toLowerCase();
 
@@ -296,7 +366,9 @@ function analyzeLocally(resumeText, jobDescription, jobTitle, fileName) {
     .map(([skill]) => skill);
 
   const matchedSkills = requiredSkills.filter((skill) =>
-    SKILL_ALIASES[skill].some((alias) => hasPhrase(resume, alias))
+    SKILL_ALIASES[skill].some((alias) =>
+      hasPhrase(resume, alias)
+    )
   );
 
   const missingSkills = requiredSkills.filter(
@@ -304,13 +376,17 @@ function analyzeLocally(resumeText, jobDescription, jobTitle, fileName) {
   );
 
   const score = requiredSkills.length
-    ? Math.round(matchedSkills.length / requiredSkills.length * 100)
+    ? Math.round(
+        (matchedSkills.length / requiredSkills.length) * 100
+      )
     : 0;
 
   const toolsToLearn = missingSkills.map((name) => ({
     name,
-    why: `This requirement was not clearly detected in your resume. Learn its fundamentals and practise with a small project if it is relevant to your target role.`,
-    priority: requiredSkills.indexOf(name) < 3 ? "High" : "Medium"
+    why:
+      "This requirement was not clearly detected in your resume. Learn its fundamentals and practise with a small project if it is relevant to your target role.",
+    priority:
+      requiredSkills.indexOf(name) < 3 ? "High" : "Medium"
   }));
 
   const recommendations = [];
@@ -342,7 +418,8 @@ function analyzeLocally(resumeText, jobDescription, jobTitle, fileName) {
   if (!/education|degree|university|college/i.test(resumeText)) {
     recommendations.push({
       title: "Check your education section",
-      description: "Make relevant education and qualifications easy to find."
+      description:
+        "Make relevant education and qualifications easy to find."
     });
   }
 
@@ -381,7 +458,6 @@ function analyzeLocally(resumeText, jobDescription, jobTitle, fileName) {
 }
 
 /* ANALYZE ENDPOINT */
-
 app.post("/api/analyze", requireAuth, (req, res) => {
   const {
     resumeText,
@@ -430,26 +506,39 @@ app.post("/api/analyze", requireAuth, (req, res) => {
   res.json(report);
 });
 
-/* USER-SPECIFIC HISTORY */
+/* GET USER-SPECIFIC HISTORY */
+app.get(
+  "/api/history",
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    await ensureSchema();
 
-app.get("/api/history", requireAuth, (req, res, next) => {
-  try {
-    const rows = db.prepare(
-      `SELECT report_json FROM analyses
-       WHERE user_id = ?
-       ORDER BY created_at DESC LIMIT 50`
-    ).all(req.session.user.id);
+    const result = await pool.query(
+      `SELECT report_json
+       FROM analyses
+       WHERE user_id = $1
+       ORDER BY created_at DESC
+       LIMIT 50`,
+      [req.session.user.id]
+    );
 
     res.json({
-      items: rows.map((row) => JSON.parse(row.report_json))
+      items: result.rows.map((row) =>
+        typeof row.report_json === "string"
+          ? JSON.parse(row.report_json)
+          : row.report_json
+      )
     });
-  } catch (error) {
-    next(error);
-  }
-});
+  })
+);
 
-app.post("/api/history", requireAuth, (req, res, next) => {
-  try {
+/* SAVE HISTORY */
+app.post(
+  "/api/history",
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    await ensureSchema();
+
     const report = req.body?.report;
 
     if (
@@ -458,83 +547,102 @@ app.post("/api/history", requireAuth, (req, res, next) => {
       !report.id ||
       !Number.isFinite(Number(report.score))
     ) {
-      return res.status(400).json({ error: "Invalid report." });
+      return res.status(400).json({
+        error: "Invalid report."
+      });
     }
 
     const id = String(report.id);
+    const cleaned = {
+      ...report,
+      score: Math.max(
+        0,
+        Math.min(100, Math.round(Number(report.score)))
+      )
+    };
 
-    const existing = db.prepare(
-      "SELECT user_id FROM analyses WHERE id = ?"
-    ).get(id);
+    const createdAt = cleaned.createdAt || new Date().toISOString();
 
-    if (existing && existing.user_id !== req.session.user.id) {
+    const existing = await pool.query(
+      "SELECT user_id FROM analyses WHERE id = $1",
+      [id]
+    );
+
+    if (
+      existing.rows[0] &&
+      String(existing.rows[0].user_id) !==
+        String(req.session.user.id)
+    ) {
       return res.status(409).json({
         error: "This report belongs to another account."
       });
     }
 
-    const cleaned = {
-      ...report,
-      score: Math.max(0, Math.min(100, Math.round(Number(report.score))))
-    };
-
-    db.prepare(
+    await pool.query(
       `INSERT INTO analyses (id, user_id, report_json, created_at)
-       VALUES (?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET
-         report_json = excluded.report_json,
-         created_at = excluded.created_at
-       WHERE analyses.user_id = excluded.user_id`
-    ).run(
-      id,
-      req.session.user.id,
-      JSON.stringify(cleaned),
-      cleaned.createdAt || new Date().toISOString()
+       VALUES ($1, $2, $3::jsonb, $4)
+       ON CONFLICT (id) DO UPDATE SET
+         report_json = EXCLUDED.report_json,
+         created_at = EXCLUDED.created_at
+       WHERE analyses.user_id = EXCLUDED.user_id`,
+      [
+        id,
+        req.session.user.id,
+        JSON.stringify(cleaned),
+        createdAt
+      ]
     );
 
     res.status(201).json({ ok: true });
-  } catch (error) {
-    next(error);
-  }
-});
+  })
+);
 
-app.delete("/api/history/:id", requireAuth, (req, res, next) => {
-  try {
-    const result = db.prepare(
-      "DELETE FROM analyses WHERE id = ? AND user_id = ?"
-    ).run(req.params.id, req.session.user.id);
+/* DELETE ONE HISTORY ITEM */
+app.delete(
+  "/api/history/:id",
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    await ensureSchema();
 
-    if (!result.changes) {
+    const result = await pool.query(
+      "DELETE FROM analyses WHERE id = $1 AND user_id = $2",
+      [req.params.id, req.session.user.id]
+    );
+
+    if (!result.rowCount) {
       return res.status(404).json({
         error: "Analysis not found in your account."
       });
     }
 
     res.json({ ok: true });
-  } catch (error) {
-    next(error);
-  }
-});
+  })
+);
 
-app.delete("/api/history", requireAuth, (req, res, next) => {
-  try {
-    db.prepare(
-      "DELETE FROM analyses WHERE user_id = ?"
-    ).run(req.session.user.id);
+/* DELETE ALL HISTORY FOR CURRENT USER */
+app.delete(
+  "/api/history",
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    await ensureSchema();
+
+    await pool.query(
+      "DELETE FROM analyses WHERE user_id = $1",
+      [req.session.user.id]
+    );
 
     res.json({ ok: true });
-  } catch (error) {
-    next(error);
-  }
-});
+  })
+);
 
-/* STATIC FILES AND EXPRESS 5 FALLBACK */
-
+/* SERVE EXISTING FRONTEND */
 app.use(express.static(path.join(__dirname, "public")));
 
 app.use((req, res, next) => {
   if (req.path.startsWith("/api/")) {
-    return res.status(404).json({ error: "API endpoint not found." });
+    return res.status(404).json({
+      error: "API endpoint not found."
+    });
   }
 
   if (req.method !== "GET") return next();
@@ -548,7 +656,6 @@ app.use((req, res, next) => {
 });
 
 /* ERROR HANDLER */
-
 app.use((error, _req, res, _next) => {
   console.error("Server error:", error.message || error);
 
@@ -559,10 +666,16 @@ app.use((error, _req, res, _next) => {
   });
 });
 
-/* START */
+/* VERCEL ENTRY POINT */
+export default app;
 
-app.listen(PORT, () => {
-  console.log(`ResumeIQ running at http://localhost:${PORT}`);
-  console.log("Authentication: Name + Password");
-  console.log("Analysis: Free local keyword matching");
-});
+/* LOCAL DEVELOPMENT */
+if (!process.env.VERCEL) {
+  const PORT = Number(process.env.PORT || 3000);
+
+  app.listen(PORT, () => {
+    console.log(`ResumeIQ running at http://localhost:${PORT}`);
+    console.log("Authentication: Name + Password");
+    console.log("Analysis: Free local keyword matching");
+  });
+}

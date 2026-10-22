@@ -5,16 +5,17 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "dev": "node server.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",
-    "better-sqlite3": "^13.0.3",
-    "connect-sqlite3": "^0.9.18",
+    "connect-pg-simple": "^10.0.0",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
     "express-rate-limit": "^8.1.0",
     "express-session": "^1.18.2",
-    "helmet": "^8.1.0"
+    "helmet": "^8.1.0",
+    "pg": "^8.16.3"
   }
 }
