@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0b1020">
+  <meta name="description" content="Compare your resume with a job description and discover relevant skills and areas to improve.">
+  <title>ResumeIQ — AI Resume Analyzer</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <style>
+    [hidden] { display: none !important; }
+    .auth-page { min-height: 100vh; display: grid; place-items: center; padding: 28px 16px; position: relative; z-index: 2; }
+    .auth-card { width: min(100%, 440px); padding: 34px; border: 1px solid rgba(148,163,184,.24); border-radius: 24px; background: rgba(13,19,39,.94); box-shadow: 0 24px 80px rgba(0,0,0,.35); color: #f8fafc; }
+    .auth-brand { display:flex; align-items:center; gap:10px; font:800 23px Manrope, sans-serif; margin-bottom:26px; }
+    .auth-brand-mark { display:grid; place-items:center; width:42px;height:42px;border-radius:14px;background:linear-gradient(135deg,#8b5cf6,#6366f1); }
+    .auth-card h1 { margin:0 0 8px; font:800 28px Manrope,sans-serif; }
+    .auth-description { color:#aab5ce; margin:0 0 24px; line-height:1.6; }
+    .auth-tabs { display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:5px;background:#090e1e;border-radius:12px;margin-bottom:22px; }
+    .auth-tab { border:0;border-radius:9px;padding:11px;background:transparent;color:#aab5ce;font:600 14px inherit;cursor:pointer; }
+    .auth-tab.active { background:#242044;color:#fff; }
+    .auth-field { display:block;margin:14px 0 6px;font-size:13px;font-weight:700;color:#dbe3f5; }
+    .auth-input { width:100%;box-sizing:border-box;padding:13px 14px;border-radius:11px;border:1px solid #343d58;background:#0a1022;color:#fff;font:inherit;outline:none; }
+    .auth-input:focus { border-color:#8b5cf6;box-shadow:0 0 0 3px rgba(139,92,246,.15); }
+
+    /* Password show/hide icon */
+    .password-input-wrap { position:relative; width:100%; }
+    .password-input-wrap .auth-input { padding-right:48px; }
+    .password-toggle {
+      position:absolute; right:8px; top:50%; transform:translateY(-50%);
+      display:grid; place-items:center; width:34px; height:34px;
+      padding:0; border:0; border-radius:8px; background:transparent;
+      color:#aab5ce; cursor:pointer;
+    }
+    .password-toggle:hover { color:#fff; background:rgba(148,163,184,.12); }
+    .password-toggle:focus-visible { outline:2px solid #8b5cf6; outline-offset:2px; }
+    .password-toggle svg { width:19px; height:19px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+
+    .auth-submit { width:100%;margin-top:20px;padding:13px 16px;border:0;border-radius:11px;background:linear-gradient(100deg,#8b5cf6,#6366f1);color:white;font-weight:800;cursor:pointer; }
+    .auth-submit:disabled { opacity:.65;cursor:wait; }
+    .auth-message { min-height:20px;margin:14px 0 0;color:#fca5a5;font-size:13px;line-height:1.5; }
+    .auth-message.success { color:#86efac; }
+    .auth-note { margin-top:18px;color:#8793ad;font-size:12px;line-height:1.5; }
+    .account-actions { display:flex;align-items:center;justify-content:flex-end;gap:12px;margin:0 0 14px;color:#cbd5e1;font-size:13px; }
+    .account-actions button { border:1px solid #4b5570;border-radius:9px;padding:8px 12px;background:transparent;color:#fff;cursor:pointer; }
+    @media (max-width:520px) { .auth-card { padding:24px 20px; } }
+  </style>
+
+  <!-- LOGIN AND SIGNUP -->
+  <section id="authPage" class="auth-page" aria-labelledby="authHeading">
+    <div class="auth-card">
+      <div class="auth-brand">
+        <span class="auth-brand-mark">R</span>
+        <span>Resume<span class="brand-accent">IQ</span></span>
+      </div>
+
+      <h1 id="authHeading">Welcome back</h1>
+      <p id="authDescription" class="auth-description">
+        Sign in to access your ResumeIQ workspace.
+      </p>
+
+      <div class="auth-tabs" role="tablist" aria-label="Account options">
+        <button id="loginTab" class="auth-tab active" type="button" role="tab" aria-selected="true">Log in</button>
+        <button id="signupTab" class="auth-tab" type="button" role="tab" aria-selected="false">Create account</button>
+      </div>
+
+      <!-- LOGIN: NAME AND PASSWORD ONLY -->
+      <form id="loginForm" novalidate>
+        <label class="auth-field" for="loginName">Name</label>
+        <input class="auth-input" id="loginName" name="name" type="text" autocomplete="username" maxlength="80" placeholder="Enter your name" required>
+
+        <label class="auth-field" for="loginPassword">Password</label>
+        <div class="password-input-wrap">
+          <input class="auth-input" id="loginPassword" name="password" type="password" autocomplete="current-password" minlength="8" placeholder="Enter your password" required>
+          <button class="password-toggle" type="button" data-password-target="loginPassword" aria-label="Show password" aria-pressed="false" title="Show password">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"></path>
+              <circle cx="12" cy="12" r="3"></circle>
+            </svg>
+          </button>
+        </div>
+
+        <button class="auth-submit" type="submit">Log in to ResumeIQ</button>
+      </form>
+
+      <!-- SIGNUP: NAME, PASSWORD AND CONFIRM PASSWORD -->
+      <form id="signupForm" hidden novalidate>
+        <label class="auth-field" for="signupName">Full name</label>
+        <input class="auth-input" id="signupName" name="name" type="text" autocomplete="name" maxlength="80" placeholder="Your full name" required>
+
+        <label class="auth-field" for="signupPassword">Create password</label>
+        <div class="password-input-wrap">
+          <input class="auth-input" id="signupPassword" name="password" type="password" autocomplete="new-password" minlength="8" placeholder="At least 8 characters" required>
+          <button class="password-toggle" type="button" data-password-target="signupPassword" aria-label="Show password" aria-pressed="false" title="Show password">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"></path>
+              <circle cx="12" cy="12" r="3"></circle>
+            </svg>
+          </button>
+        </div>
+
+        <label class="auth-field" for="signupConfirmPassword">Confirm password</label>
+        <div class="password-input-wrap">
+          <input class="auth-input" id="signupConfirmPassword" name="confirmPassword" type="password" autocomplete="new-password" minlength="8" placeholder="Re-enter your password" required>
+          <button class="password-toggle" type="button" data-password-target="signupConfirmPassword" aria-label="Show password" aria-pressed="false" title="Show password">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"></path>
+              <circle cx="12" cy="12" r="3"></circle>
+            </svg>
+          </button>
+        </div>
+
+        <button class="auth-submit" type="submit">Create my account</button>
+      </form>
+
+      <p id="authMessage" class="auth-message" role="status" aria-live="polite"></p>
+      <p class="auth-note">
+        Your account is managed by the ResumeIQ backend. Never share your password or API keys.
+      </p>
+    </div>
+  </section>
+
+  <!-- MAIN RESUME ANALYZER -->
+  <div id="appContent" hidden>
+    <div class="ambient ambient-one" aria-hidden="true"></div>
+    <div class="ambient ambient-two" aria-hidden="true"></div>
+
+    <main class="app-shell">
+      <header class="site-header">
+        <a class="brand" href="#" aria-label="ResumeIQ home">
+          <span class="brand-mark">R</span>
+          <span>Resume<span class="brand-accent">IQ</span></span>
+        </a>
+
+        <nav class="header-nav" aria-label="Main navigation">
+          <a href="#analyzer">Analyzer</a>
+          <a href="#results">Results</a>
+          <a href="#historySection">History <span id="historyBadge" class="nav-count">0</span></a>
+        </nav>
+
+        <span class="header-status">
+          <span class="status-dot"></span>
+          ResumeIQ workspace
+        </span>
+      </header>
+
+      <section class="hero">
+        <div class="hero-copy-block">
+          <p class="eyebrow">
+            <span class="sparkle">✦</span>
+            SMARTER APPLICATIONS START HERE
+          </p>
+
+          <h1>Make your resume<br><span class="gradient-text">job-ready.</span></h1>
+
+          <p class="hero-copy">
+            Compare your resume with a job description, discover skill gaps,
+            and get practical suggestions before you apply.
+          </p>
+
+          <div class="hero-points">
+            <span><span class="point-check">✓</span> Job-specific matching</span>
+            <span><span class="point-check">✓</span> Actionable feedback</span>
+            <span><span class="point-check">✓</span> Downloadable PDF</span>
+          </div>
+        </div>
+
+        <div class="hero-art" aria-hidden="true">
+          <div class="orbit orbit-one"></div>
+          <div class="orbit orbit-two"></div>
+
+          <div class="hero-document">
+            <div class="doc-top"><span></span><span></span><span></span></div>
+            <div class="doc-profile">
+              <div class="doc-avatar">R</div>
+              <div class="doc-lines"><i></i><i></i></div>
+            </div>
+            <div class="doc-line wide"></div>
+            <div class="doc-line"></div>
+            <div class="doc-line medium"></div>
+            <div class="doc-section">SKILLS</div>
+            <div class="doc-tags"><i>SQL</i><i>Excel</i><i>Python</i></div>
+            <div class="doc-line wide"></div>
+            <div class="doc-line medium"></div>
+          </div>
+
+          <div class="floating-score">
+            <span class="mini-check">✓</span>
+            <div><strong>Ready to improve</strong><small>Resume insights</small></div>
+          </div>
+          <div class="floating-spark">✦</div>
+        </div>
+      </section>
+
+      <!-- RESUME UPLOAD AND JOB DESCRIPTION -->
+      <section id="analyzer" class="analyzer-layout" aria-label="Resume analyzer">
+        <form id="resumeForm" class="panel input-panel">
+          <div class="panel-heading">
+            <div class="heading-icon">01</div>
+            <div><p class="step-label">FIRST STEP</p><h2>Upload your resume</h2></div>
+            <span class="file-limit">PDF, DOCX, TXT · Max 10 MB</span>
+          </div>
+
+          <label class="upload-zone" id="uploadZone" for="resumeFile" tabindex="0">
+            <input id="resumeFile" name="resumeFile" type="file" accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain">
+            <span class="upload-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <path d="M12 16V4m0 0L7 9m5-5 5 5M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/>
+              </svg>
+            </span>
+            <strong class="upload-title">Drop your resume here</strong>
+            <span class="upload-subtitle">or <span class="browse-link">browse files</span> from your device</span>
+            <span class="upload-formats">PDF · DOCX · TXT</span>
+          </label>
+
+          <div class="selected-file" id="selectedFile" hidden>
+            <span class="file-type-icon">↧</span>
+            <div class="selected-file-copy">
+              <strong id="selectedFileName">No file selected</strong>
+              <small id="selectedFileMeta">Choose a resume to continue</small>
+            </div>
+            <button id="removeFileButton" class="icon-button" type="button" aria-label="Remove selected file">×</button>
+          </div>
+
+          <p id="fileInfo" class="field-hint">
+            Your resume is read locally in your browser. This app does not upload it to a server.
+          </p>
+
+          <div class="panel-heading job-panel-heading">
+            <div class="heading-icon">02</div>
+            <div><p class="step-label">SECOND STEP</p><h2>Add the job description</h2></div>
+          </div>
+
+          <label class="field-label" for="jobTitle">Job title <span class="optional">(optional)</span></label>
+          <input id="jobTitle" class="text-input" type="text" maxlength="120" placeholder="e.g. Junior Data Analyst">
+
+          <label class="field-label" for="jobDescription">Job description <span class="required">*</span></label>
+          <textarea id="jobDescription" name="jobDescription" rows="7" placeholder="Paste the job responsibilities, required skills, qualifications, and keywords here..." required></textarea>
+
+          <div class="textarea-footer">
+            <span>Include the job requirements for a more useful comparison.</span>
+            <span id="characterCount">0 characters</span>
+          </div>
+
+          <div class="form-footer">
+            <p id="statusMessage" class="status-message" role="status" aria-live="polite">Ready when you are.</p>
+            <button id="analyzeButton" class="button button-primary" type="submit">
+              <span>Analyze resume</span><span aria-hidden="true">↗</span>
+            </button>
+          </div>
+        </form>
+
+        <aside class="side-panel">
+          <article class="panel side-card">
+            <div class="side-card-icon">✦</div>
+            <h3>What you'll get</h3>
+            <ul class="benefit-list">
+              <li><span class="benefit-icon purple">◎</span><span><strong>Match score</strong><small>See how closely your skills align.</small></span></li>
+              <li><span class="benefit-icon green">✓</span><span><strong>Skill gaps</strong><small>Find job skills not detected in your resume.</small></span></li>
+              <li><span class="benefit-icon blue">↗</span><span><strong>Improvement ideas</strong><small>Get practical next steps.</small></span></li>
+              <li><span class="benefit-icon pink">↓</span><span><strong>PDF report</strong><small>Keep a copy of your results.</small></span></li>
+            </ul>
+          </article>
+
+          <article class="tip-card">
+            <div class="tip-icon">✧</div>
+            <div>
+              <strong>Small tip</strong>
+              <p>Use the job description for the exact role you are applying for. Never add a skill or experience you do not actually have.</p>
+            </div>
+          </article>
+        </aside>
+      </section>
+
+      <!-- ANALYSIS RESULTS -->
+      <section id="results" class="results-section" aria-labelledby="resultsTitle" hidden>
+        <div class="results-heading">
+          <div>
+            <p class="eyebrow">YOUR PERSONALIZED REPORT</p>
+            <h2 id="resultsTitle">Resume match report</h2>
+            <p id="resultsSubtitle" class="results-subtitle">Review the insights below and decide what to improve next.</p>
+          </div>
+
+          <div class="result-actions">
+            <button id="downloadButton" class="button button-primary" type="button"><span aria-hidden="true">↓</span> Download PDF report</button>
+            <button id="resetButton" class="button button-secondary" type="button">New analysis</button>
+          </div>
+        </div>
+
+        <div class="score-layout">
+          <article class="panel score-card">
+            <div>
+              <p class="card-kicker">SKILL MATCH</p>
+              <h3>Overall match score</h3>
+              <p id="scoreDescription" class="muted-copy">Based on skills detected in the job description.</p>
+            </div>
+
+            <div class="score-ring-wrap">
+              <div class="score-ring" id="scoreRing" role="img" aria-label="Match score not calculated" style="--score-angle: 0deg">
+                <div class="score-ring-inner">
+                  <strong id="scoreNumber">--<span>%</span></strong>
+                  <span class="score-ring-caption">match</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="score-meter">
+              <div class="score-meter-labels"><span>0%</span><span>100%</span></div>
+              <div class="score-meter-track"><div id="scoreMeterFill" class="score-meter-fill"></div></div>
+            </div>
+
+            <p id="matchScore" class="score-detail">Keyword match score: --</p>
+            <p class="score-footnote">This is a keyword-based estimate, not an official ATS score or a hiring prediction.</p>
+          </article>
+
+          <article class="panel summary-card">
+            <p class="card-kicker">AT A GLANCE</p>
+            <h3>Skill coverage</h3>
+            <div class="summary-stat"><span class="stat-icon matched-icon">✓</span><span>Matching skills</span><strong id="matchedCount">0</strong></div>
+            <div class="summary-stat"><span class="stat-icon missing-icon">＋</span><span>Skills to review</span><strong id="missingCount">0</strong></div>
+            <div class="summary-stat"><span class="stat-icon neutral-icon">⌕</span><span>Skills detected in job</span><strong id="jobSkillCount">0</strong></div>
+            <div class="coverage-bar"><span id="coverageBar"></span></div>
+            <p id="coverageText" class="summary-note">Run an analysis to see your skill coverage.</p>
+          </article>
+        </div>
+
+        <div class="result-grid">
+          <article class="panel result-card">
+            <div class="result-card-heading">
+              <span class="list-symbol positive">✓</span>
+              <div><h3>Matched skills</h3><p class="card-description">Detected in both your resume and the job description.</p></div>
+            </div>
+            <ul id="matchingSkills" class="skill-list"></ul>
+          </article>
+
+          <article class="panel result-card">
+            <div class="result-card-heading">
+              <span class="list-symbol needs-work">＋</span>
+              <div><h3>Missing / review skills</h3><p class="card-description">Mentioned in the job description but not detected in your resume.</p></div>
+            </div>
+            <ul id="missingSkills" class="skill-list"></ul>
+          </article>
+
+          <article class="panel result-card suggestions-card">
+            <div class="result-card-heading">
+              <span class="list-symbol idea">✦</span>
+              <div><h3>Improvement suggestions</h3><p class="card-description">Practical suggestions based on the analysis.</p></div>
+            </div>
+            <ul id="suggestions" class="suggestion-list"></ul>
+          </article>
+        </div>
+
+        <p class="privacy-note">
+          Your resume is processed in this browser. Analysis history is stored locally on this device.
+          PDF and DOCX support uses libraries loaded from public CDNs.
+        </p>
+      </section>
+
+      <!-- ANALYSIS HISTORY -->
+      <section id="historySection" class="panel history-section">
+        <div class="history-heading">
+          <div>
+            <p class="eyebrow">YOUR WORKSPACE</p>
+            <h2>Analysis history</h2>
+            <p class="muted-copy">Recent reports saved in this browser on this device.</p>
+          </div>
+          <button id="clearHistoryButton" class="button button-quiet" type="button">Clear history</button>
+        </div>
+
+        <div id="historyList" class="history-list"></div>
+
+        <p id="emptyHistory" class="empty-history">
+          <span>◷</span>
+          <strong>No analyses yet</strong>
+          <small>Your saved reports will appear here after your first analysis.</small>
+        </p>
+      </section>
+
+      <footer class="site-footer">
+        <a class="brand footer-brand" href="#">
+          <span class="brand-mark">R</span>
+          <span>Resume<span class="brand-accent">IQ</span></span>
+        </a>
+        <span>Built to help you prepare with confidence.</span>
+        <span class="footer-note">Your career. Your next step.</span>
+      </footer>
+    </main>
+  </div>
+
+  <!-- Libraries for resume reading and PDF reports -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://unpkg.com/mammoth@1.9.0/mammoth.browser.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+  <!-- Password visibility toggle -->
+  <script>
+    document.querySelectorAll(".password-toggle[data-password-target]").forEach(function (button) {
+      button.addEventListener("click", function () {
+        const input = document.getElementById(button.dataset.passwordTarget);
+        if (!input) return;
+
+        const shouldShow = input.type === "password";
+        input.type = shouldShow ? "text" : "password";
+        button.setAttribute("aria-label", shouldShow ? "Hide password" : "Show password");
+        button.setAttribute("title", shouldShow ? "Hide password" : "Show password");
+        button.setAttribute("aria-pressed", String(shouldShow));
+
+        button.innerHTML = shouldShow
+          ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3l18 18"></path><path d="M10.6 10.6a2 2 0 0 0 2.8 2.8"></path><path d="M9.9 5.2A10.8 10.8 0 0 1 12 5c6.4 0 10 7 10 7a16.5 16.5 0 0 1-3.1 3.8"></path><path d="M6.2 6.2C3.5 8 2 12 2 12s3.6 7 10 7a10.8 10.8 0 0 0 4-.8"></path></svg>'
+          : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"></path><circle cx="12" cy="12" r="3"></circle></svg>';
+      });
+    });
+  </script>
+
+  <!-- Application logic -->
+  <script src="script.js"></script>
+</body>
+</html>
